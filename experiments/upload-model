@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+name=$1
+if [ -z "$name" ]; then
+    echo "Usage: $0 <name>"
+    exit 1
+fi
+huggingface-cli upload-large-folder EleutherAI/$name experiments/results/$name --repo-type model

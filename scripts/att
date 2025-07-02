@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-PROMPT_NAME="test-gpt2"
-# PROMPT_NAME="test-gemma"
+# PROMPT_NAME="test-gpt2"
+PROMPT_NAME="test-gemma"
 # PROMPT_NAME="basketball-llama"
 # PROMPT_NAME="basketball-gemma"
 # PROMPT_NAME="basketball-smollm"
@@ -9,7 +9,8 @@ PROMPT_NAME="test-gpt2"
 # SCAN=transcoder_llama_131k_highbs_v0
 # SCAN=transcoder-llama-131k-mntss
 # SCAN=bs8-lr2e-4-none-ef128-k16
-SCAN=bs8-lr3e-4-tied-ef128-k16
+# SCAN=bs8-lr3e-4-tied-ef128-k16
+SCAN=gemma-mntss-no-skip
 # SCAN=gemmascope
 # SCAN=gemmascope
 # SCAN=transcoder_llama_131k_mntss_kl
@@ -27,7 +28,9 @@ uv run python -m attribute \
 --scan "$SCAN" \
 "$PROMPT_TEXT" \
 $@ \
---transcoder_path="/mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/$SCAN" --model_name="openai-community/gpt2" --remove_prefix 1 \
+--cache_features=False --save_graph=False --save_dir=results/test-$SCAN \
+--transcoder_path="EleutherAI/$SCAN" --model_name="google/gemma-2-2b" --remove_prefix 1 \
+# --transcoder_path="/mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/$SCAN" --model_name="openai-community/gpt2" --remove_prefix 1 \
 # --transcoder_path="results/gemma-scope-2b-pt-transcoders" --model_name="google/gemma-2-2b" --remove_prefix 1 --post_ln_hook=True \
 # --transcoder_path="results/llama-mntss-relu" --model_name="meta-llama/Llama-3.2-1B" --remove_prefix 1 --pre_ln_hook=True --force_k=512 --filter_high_freq_early=0.0
 # --transcoder_path="results/gemma-scope-2b-pt-transcoders" --model_name="google/gemma-2-2b" --remove_prefix 1 --post_ln_hook=True \
