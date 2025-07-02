@@ -4,7 +4,7 @@ import random
 import numpy as np
 import torch
 from collections import defaultdict, OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Literal
 
@@ -53,6 +53,8 @@ class AttributionConfig:
     influence_gpu: bool = True
     # keep nodes that make up this fraction of the total influence
     node_cum_threshold: float = 0.8
+    # target L0s for pruning
+    pruning_target_l0s: list[int] = field(default_factory=lambda: [50, 100, 150, 200, 300, 400, 500, 600, 700, 800, 900, 1000])
     # keep per_layer_position nodes above this threshold for each layer/position pair
     secondary_threshold = 1e-5
     per_layer_position = 0
@@ -80,6 +82,7 @@ class SaveResults(Serializable):
     replacement_score: float
     completeness_score_unpruned: float
     replacement_score_unpruned: float
+    sweep_pruning_results: dict[int, dict[str, float]]
     num_nodes: int
     num_edges: int
     node_threshold: float
@@ -219,6 +222,12 @@ class AttributionGraph:
         logger.info("Finding influence matrix")
         original_adj_matrix = adj_matrix.copy()
 
+        np.savez("results/gemma_adj_matrix.npz",
+                 adj_matrix=adj_matrix,
+                 logit_weights=influence_sources,
+                 emb_mask=emb_mask,
+                 error_mask=error_mask,)
+
         influence, adj_matrix = self.find_influence(adj_matrix)
 
         usage = influence_sources @ influence
@@ -234,10 +243,6 @@ class AttributionGraph:
         logger.info(f"Replacement score (unpruned): {replacement_score_unpruned:.3f}")
 
         logger.info("Selecting nodes and edges")
-        selected_nodes = [node for i, node in enumerate(dedup_node_names)
-                  if self.nodes[node].node_type in ("OutputNode",)
-                  + (("InputNode",) if self.config.keep_all_input_nodes else ())
-                  + (("ErrorNode",) if self.config.keep_all_error_nodes else ())]
 
         usage_sort = np.argsort(usage)[::-1]
         usage_rev_sort = np.argsort(usage_sort)
@@ -247,48 +252,68 @@ class AttributionGraph:
         node_threshold = sorted_usage[np.searchsorted(cumsum_usage, self.config.node_cum_threshold)]
         logger.info(f"Node threshold: {node_threshold}")
 
-        for seq_idx in range(self.cache.input_ids.shape[-1]):
-            for layer_idx in range(self.num_layers):
-                matching_nodes = [
-                    node for node in dedup_node_names
-                    if self.nodes[node].layer_index == layer_idx
-                    and self.nodes[node].token_position == seq_idx
-                    and node not in selected_nodes
-                ]
-                matching_nodes.sort(key=lambda x: usage[dedup_node_indices[x]], reverse=True)
-                matching_nodes = matching_nodes[:self.config.per_layer_position] + [
-                    node
-                    for node in matching_nodes[self.config.per_layer_position:]
-                    if usage[dedup_node_indices[node]] > node_threshold
-                ]
-                matching_nodes = [
-                    node for node in matching_nodes
-                    if usage[dedup_node_indices[node]] > self.config.secondary_threshold
-                ]
-                selected_nodes.extend(matching_nodes)
+
+        def filter_nodes(node_threshold):
+            selected_nodes = [node for i, node in enumerate(dedup_node_names)
+                    if self.nodes[node].node_type in ("OutputNode",)
+                    + (("InputNode",) if self.config.keep_all_input_nodes else ())
+                    + (("ErrorNode",) if self.config.keep_all_error_nodes else ())]
+
+            for seq_idx in range(self.cache.input_ids.shape[-1]):
+                for layer_idx in range(self.num_layers):
+                    matching_nodes = [
+                        node for node in dedup_node_names
+                        if self.nodes[node].layer_index == layer_idx
+                        and self.nodes[node].token_position == seq_idx
+                        and node not in selected_nodes
+                    ]
+                    matching_nodes.sort(key=lambda x: usage[dedup_node_indices[x]], reverse=True)
+                    matching_nodes = matching_nodes[:self.config.per_layer_position] + [
+                        node
+                        for node in matching_nodes[self.config.per_layer_position:]
+                        if usage[dedup_node_indices[node]] > node_threshold
+                    ]
+                    matching_nodes = [
+                        node for node in matching_nodes
+                        if usage[dedup_node_indices[node]] > self.config.secondary_threshold
+                    ]
+                    selected_nodes.extend(matching_nodes)
+            filtered_mask = np.zeros((len(dedup_node_names),), dtype=bool)
+            for node in selected_nodes:
+                filtered_mask[dedup_node_indices[node]] = 1
+            filtered_index = np.cumsum(filtered_mask) - 1
+
+            filtered_adj_matrix = original_adj_matrix[filtered_mask][:, filtered_mask].copy()
+            filtered_influence, filtered_adj_matrix = self.find_influence(filtered_adj_matrix)
+            filtered_node_influence = influence_sources[filtered_mask] @ filtered_influence
+            filtered_influence = filtered_adj_matrix * (filtered_node_influence + influence_sources[filtered_mask])[None, :]
+
+            completeness_score = (usage_and_sources[filtered_mask] * (1 - filtered_adj_matrix[:, error_mask[filtered_mask]].sum(axis=1))).sum() / usage_and_sources[filtered_mask].sum()
+            influence_emb = filtered_node_influence[emb_mask[filtered_mask]].sum()
+            influence_err = filtered_node_influence[error_mask[filtered_mask]].sum()
+            replacement_score = float(influence_emb / (influence_emb + influence_err))
+
+            return selected_nodes, filtered_index, filtered_influence, completeness_score, replacement_score
+
+        selected_nodes, filtered_index, filtered_influence, completeness_score, replacement_score = filter_nodes(node_threshold)
 
         logger.info(f"Selected {len(selected_nodes)} nodes")
-
-        filtered_mask = np.zeros((len(dedup_node_names),), dtype=bool)
-        for node in selected_nodes:
-            filtered_mask[dedup_node_indices[node]] = 1
-        # for node in dedup_node_names:
-        #     if node.startswith("error"):
-        #         filtered_mask[dedup_node_indices[node]] = 1
-        filtered_index = np.cumsum(filtered_mask) - 1
-
-        filtered_adj_matrix = original_adj_matrix[filtered_mask][:, filtered_mask].copy()
-        # orig_filtered_adj_matrix = filtered_adj_matrix
-        filtered_influence, filtered_adj_matrix = self.find_influence(filtered_adj_matrix)
-        filtered_node_influence = influence_sources[filtered_mask] @ filtered_influence
-        filtered_influence = filtered_adj_matrix * (filtered_node_influence + influence_sources[filtered_mask])[None, :]
-
-        completeness_score = (usage_and_sources[filtered_mask] * (1 - filtered_adj_matrix[:, error_mask[filtered_mask]].sum(axis=1))).sum() / usage_and_sources[filtered_mask].sum()
         logger.info(f"Completeness score: {completeness_score:.3f}")
-        influence_emb = filtered_node_influence[emb_mask[filtered_mask]].sum()
-        influence_err = filtered_node_influence[error_mask[filtered_mask]].sum()
-        replacement_score = float(influence_emb / (influence_emb + influence_err))
         logger.info(f"Replacement score: {replacement_score:.3f}")
+
+        sweep_pruning_results = {}
+        for target_l0 in self.config.pruning_target_l0s:
+            n_nodes = target_l0 * self.seq_len + self.seq_len + len(self.output_nodes)
+            if n_nodes > len(dedup_node_names):
+                continue
+            threshold = sorted_usage[n_nodes]
+            selected_nodes, filtered_index, filtered_influence, completeness_score, replacement_score = filter_nodes(threshold)
+            logger.info(f"Pruned to {len(selected_nodes)} nodes, L0={target_l0}, completeness={completeness_score:.3f}, replacement={replacement_score:.3f}")
+            sweep_pruning_results[target_l0] = dict(
+                n_nodes=len(selected_nodes),
+                completeness_score=completeness_score,
+                replacement_score=replacement_score,
+            )
 
         selected_edge_matrix = np.sort(filtered_influence.flatten())[::-1]
         edge_cumsum = np.cumsum(selected_edge_matrix)
@@ -405,6 +430,7 @@ class AttributionGraph:
                 node_threshold=node_threshold,
                 edge_threshold=edge_threshold,
                 node_cum_threshold=self.config.node_cum_threshold,
+                sweep_pruning_results=sweep_pruning_results,
                 config=self.config
             )
 
