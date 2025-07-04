@@ -42,6 +42,9 @@ class TranscodedOutputs:
     first_layer_activations: Float[Array, "batch seq_len hidden_size"]
     logits: Float[Array, "batch seq_len vocab_size"]
 
+    error_magnitudes: list[float]
+    l0_per_layer: list[float]
+
     @property
     def seq_len(self):
         return self.input_ids.shape[1]
@@ -247,6 +250,8 @@ class TranscodedModel(object):
         l0s = {}
         transcoder_locations = {}
         errors = {}
+        error_magnitudes = []
+        l0s_per_layer = []
 
         def get_mlp_hook(module, input, output):
             if isinstance(input, tuple):
@@ -376,6 +381,8 @@ class TranscodedModel(object):
             error.requires_grad_(True)
             fvu_approx = diff[:, 1:].pow(2).sum() / output[:, 1:].pow(2).sum()
             logger.info(f"Layer {module_name} error: {fvu_approx.item()} L0: {l0}")
+            error_magnitudes.append(fvu_approx.item())
+            l0s_per_layer.append(l0)
 
             latent_indices = transcoder_acts.latent_indices.unflatten(0, batch_dims)
             target_transcoder_activations[module_name] = target_latent_acts
@@ -430,6 +437,8 @@ class TranscodedModel(object):
             first_layer_activations=first_layer_activations,
             last_layer_activations=last_layer_activations,
             logits=logits,
+            error_magnitudes=error_magnitudes,
+            l0_per_layer=l0s_per_layer,
         )
 
         return transcoded_outputs

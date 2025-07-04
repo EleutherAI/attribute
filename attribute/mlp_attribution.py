@@ -84,11 +84,12 @@ class SaveResults(Serializable):
     replacement_score_unpruned: float
     sweep_pruning_results: dict[int, dict[str, float]]
     num_nodes: int
-    num_edges: int
     node_threshold: float
     edge_threshold: float
     node_cum_threshold: float
     config: AttributionConfig
+    l0s: list[int]
+    errors: list[float]
 
 
 class AttributionGraph:
@@ -322,6 +323,22 @@ class AttributionGraph:
         edge_threshold = selected_edge_matrix[np.searchsorted(edge_cumsum, self.config.edge_cum_threshold)]
         logger.info(f"Edge threshold: {edge_threshold}")
 
+        if save_dir is None:
+            return SaveResults(
+                completeness_score=completeness_score,
+                replacement_score=replacement_score,
+                completeness_score_unpruned=completeness_score_unpruned,
+                replacement_score_unpruned=replacement_score_unpruned,
+                num_nodes=len(selected_nodes),
+                node_threshold=node_threshold,
+                edge_threshold=edge_threshold,
+                node_cum_threshold=self.config.node_cum_threshold,
+                sweep_pruning_results=sweep_pruning_results,
+                config=self.config,
+                l0s=self.cache.l0_per_layer,
+                errors=self.cache.error_magnitudes,
+            )
+
         export_edges = []
         has_incoming = set()
         has_outgoing = set()
@@ -418,21 +435,6 @@ class AttributionGraph:
                 # sg_pos="",
             )
         )
-
-        if save_dir is None:
-            return SaveResults(
-                completeness_score=completeness_score,
-                replacement_score=replacement_score,
-                completeness_score_unpruned=completeness_score_unpruned,
-                replacement_score_unpruned=replacement_score_unpruned,
-                num_nodes=len(export_nodes),
-                num_edges=len(export_edges),
-                node_threshold=node_threshold,
-                edge_threshold=edge_threshold,
-                node_cum_threshold=self.config.node_cum_threshold,
-                sweep_pruning_results=sweep_pruning_results,
-                config=self.config
-            )
 
         save_dir = Path(save_dir)
         logger.info("Saving graph to", save_dir)
