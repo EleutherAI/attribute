@@ -270,14 +270,21 @@ class AttributionGraph:
             for node in selected_nodes:
                 filtered_mask[dedup_node_indices[node]] = 1
 
-            filtered_adj_matrix = adj_matrix[filtered_mask][:, filtered_mask].copy()
+            # pruned nodes can receive influence but don't contribute to the completeness score
+            filtered_adj_matrix = adj_matrix * filtered_mask[:, None]
             filtered_influence = self.find_influence(filtered_adj_matrix)
-            filtered_influence = influence_sources[filtered_mask] @ filtered_influence
+            # includes pruned nodes as sources; they become error nodes and may receive some influence
+            filtered_influence = influence_sources + influence_sources @ filtered_influence
 
-            completeness_score = (usage_and_sources[filtered_mask] * (1 - filtered_adj_matrix[:, error_mask[filtered_mask]].sum(axis=1))).sum() / usage_and_sources[filtered_mask].sum()
-            influence_emb = filtered_influence[emb_mask[filtered_mask]].sum()
-            influence_err = filtered_influence[error_mask[filtered_mask]].sum()
+            err_or_pruned = (error_mask & filtered_mask) | (~error_mask & ~emb_mask & ~filtered_mask)
+            completeness_score = ((filtered_influence * filtered_mask) * (1 - (filtered_adj_matrix * err_or_pruned[None, :]).sum(axis=1))).sum() / (filtered_influence * filtered_mask).sum()
+            influence_emb = filtered_influence[emb_mask].sum()
+            influence_err = filtered_influence[err_or_pruned].sum()
             replacement_score = float(influence_emb / (influence_emb + influence_err))
+
+            # prune back for later metrics with filtered indices
+            filtered_adj_matrix = filtered_adj_matrix[filtered_mask][:, filtered_mask].copy()
+            filtered_influence = filtered_influence[filtered_mask]
 
             return selected_nodes, filtered_mask, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score
 
