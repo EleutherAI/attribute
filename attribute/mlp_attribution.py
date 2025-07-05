@@ -33,7 +33,7 @@ class AttributionConfig:
     seed: int = 42
 
     # how many target nodes to compute contributions for
-    flow_steps: int = 5000
+    flow_steps: int = 15000
     # batch size for MLP attribution
     batch_size: int = 32
     # whether to use the softmax gradient for the output node
@@ -55,7 +55,7 @@ class AttributionConfig:
     node_cum_threshold: float = 0.8
     # target node count for pruning
     pruning_target_counts: list[int] = field(default_factory=lambda: [5, 10, 25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
-    pruning_target_meaning: Literal["l0", "nodes"] = "nodes"
+    pruning_target_meaning: Literal["l0", "nodes"] = "l0"
     # keep per_layer_position nodes above this threshold for each layer/position pair
     secondary_threshold = 1e-5
     per_layer_position = 0
@@ -160,9 +160,9 @@ class AttributionGraph:
             adj_matrix[target_index, source_index] = weight * activation_sources[source_index]
 
         if normalize:
-            adj_matrix /= np.maximum(1e-2, np.nan_to_num(adj_matrix.sum(axis=1, keepdims=True)))
+            adj_matrix /= np.maximum(1e-10, np.nan_to_num(adj_matrix.sum(axis=1, keepdims=True)))
 
-        return adj_matrix, dedup_node_names, activation_sources
+        return adj_matrix, dedup_node_names
 
     def make_latent_dataset(self, cache_path: os.PathLike, module_latents: dict[str, torch.Tensor]):
         if self.model.pre_ln_hook and module_latents:
@@ -184,20 +184,19 @@ class AttributionGraph:
             influence = torch.inverse(identity - adj_gpu) - identity
             influence = influence.cpu().numpy()
             adj_matrix = adj_gpu.cpu().numpy()
+        elif self.config.influence_method == "iterative":
+            influence = LinearOperator(
+                shape=(n_initial, n_initial),
+                matvec=partial(compute_influence, A=adj_matrix.T),
+                rmatvec=partial(compute_influence, A=adj_matrix),
+                dtype=adj_matrix.dtype,
+            )
         else:
-            if self.config.influence_method == "iterative":
-                influence = LinearOperator(
-                    shape=(n_initial, n_initial),
-                    matvec=partial(compute_influence, A=adj_matrix.T),
-                    rmatvec=partial(compute_influence, A=adj_matrix),
-                    dtype=adj_matrix.dtype,
-                )
-            else:
-                influence = np.linalg.inv(np.eye(n_initial) - adj_matrix) - np.eye(n_initial)
+            influence = np.linalg.inv(np.eye(n_initial) - adj_matrix) - np.eye(n_initial)
         return influence
 
     def save_graph(self, save_dir: os.PathLike | None) -> SaveResults | None:
-        adj_matrix, dedup_node_names, activation_sources = self.adjacency_matrix(absolute=True, normalize=False)
+        adj_matrix, dedup_node_names = self.adjacency_matrix()
         dedup_node_indices = {name: i for i, name in enumerate(dedup_node_names)}
 
         n_initial = len(dedup_node_names)
@@ -217,12 +216,8 @@ class AttributionGraph:
             if isinstance(node, OutputNode):
                 influence_sources[index] = node.probability
 
-        logger.info("Finding influence matrix")
-        adj_matrix = np.abs(adj_matrix)
-        adj_matrix = adj_matrix / np.maximum(1e-10, adj_matrix.sum(axis=1, keepdims=True))
-
+        logger.info("Finding influences")
         influence = self.find_influence(adj_matrix)
-
         usage = influence_sources @ influence
         logger.info(f"Top influences: {usage[np.argsort(usage)[-10:][::-1]].tolist()}")
 
@@ -247,7 +242,7 @@ class AttributionGraph:
 
 
         def filter_nodes(node_threshold):
-            selected_nodes = [node for i, node in enumerate(dedup_node_names)
+            selected_nodes = [node for node in dedup_node_names
                     if self.nodes[node].node_type in ("OutputNode",)
                     + (("InputNode",) if self.config.keep_all_input_nodes else ())
                     + (("ErrorNode",) if self.config.keep_all_error_nodes else ())]
@@ -274,7 +269,6 @@ class AttributionGraph:
             filtered_mask = np.zeros((len(dedup_node_names),), dtype=bool)
             for node in selected_nodes:
                 filtered_mask[dedup_node_indices[node]] = 1
-            filtered_index = np.cumsum(filtered_mask) - 1
 
             filtered_adj_matrix = adj_matrix[filtered_mask][:, filtered_mask].copy()
             filtered_influence = self.find_influence(filtered_adj_matrix)
@@ -285,9 +279,10 @@ class AttributionGraph:
             influence_err = filtered_influence[error_mask[filtered_mask]].sum()
             replacement_score = float(influence_emb / (influence_emb + influence_err))
 
-            return selected_nodes, filtered_mask, filtered_index, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score
+            return selected_nodes, filtered_mask, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score
 
-        selected_nodes, filtered_mask, filtered_index, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score = filter_nodes(node_threshold)
+        selected_nodes, filtered_mask, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score = filter_nodes(node_threshold)
+        filtered_index = np.cumsum(filtered_mask) - 1
         filtered_influence_matrix = filtered_influence[:, None] * filtered_adj_matrix
 
         logger.info(f"Selected {len(selected_nodes)} nodes")
@@ -296,18 +291,19 @@ class AttributionGraph:
 
         sweep_pruning_results = {}
         for n_nodes in self.config.pruning_target_counts:
+            n_nodes_select = n_nodes
             if self.config.pruning_target_meaning == "l0":
-                n_nodes = n_nodes * self.seq_len
-            n_nodes_select = n_nodes + self.seq_len + len(self.output_nodes)
+                n_nodes_select = n_nodes_select * self.seq_len
+            n_nodes_select = n_nodes_select + self.seq_len + len(self.output_nodes)
             if n_nodes_select >= len(dedup_node_names):
                 continue
             threshold = sorted_usage[n_nodes_select]
-            selected_nodes, filtered_mask, filtered_index, filtered_influence, filtered_adj_matrix, completeness_score, replacement_score = filter_nodes(threshold)
-            logger.info(f"Pruned to {n_nodes} nodes, completeness={completeness_score:.3f}, replacement={replacement_score:.3f}")
+            selected_nodes_, _filtered_mask, _filtered_influence, _filtered_adj_matrix, completeness_score, replacement_score = filter_nodes(threshold)
+            logger.info(f"Pruned to {n_nodes_select} nodes, completeness={completeness_score:.3f}, replacement={replacement_score:.3f}")
             # logger.info(f"Fraction of error nodes: {np.sum(error_mask[filtered_mask]) / len(selected_nodes):.3f}")
             # logger.info(f"Fraction of input nodes: {np.sum(emb_mask[filtered_mask]) / len(selected_nodes):.3f}")
             sweep_pruning_results[n_nodes] = dict(
-                n_selected=len(selected_nodes),
+                n_selected=len(selected_nodes_),
                 completeness_score=completeness_score,
                 replacement_score=replacement_score,
             )
@@ -342,7 +338,7 @@ class AttributionGraph:
             if not (edge.source.id in selected_nodes and edge.target.id in selected_nodes):
                 continue
             if abs(
-                filtered_influence[filtered_index[dedup_node_indices[edge.target.id]],
+                filtered_adj_matrix[filtered_index[dedup_node_indices[edge.target.id]],
                                    filtered_index[dedup_node_indices[edge.source.id]]]
                 ) < edge_threshold:
                 continue

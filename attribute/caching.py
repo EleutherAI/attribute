@@ -690,17 +690,16 @@ class TranscodedModel(object):
         index = self.name_to_index[hookpoint]
         outputs_saved = {}
         def freeze_slice(module, input, output, start, end):
-            module_name = self.module_to_name[module]
-            if module_name in outputs_saved:
-                output = outputs_saved[module_name]
+            if module in outputs_saved:
+                output = outputs_saved[module]
             if start == 0 and end == output.shape[-1]:
                 result = output.detach()
             else:
                 indices = torch.arange(output.shape[-1], device=output.device)
                 mask = (indices >= start) & (indices < end)
                 output = torch.where(mask, output.detach(), output)
-                result = output.detach()
-            outputs_saved[module_name] = result
+                result = output
+            outputs_saved[module] = result
             return result
         for module, start, end in (self.attn_q_slice(index), self.attn_k_slice(index)):
             module.register_forward_hook(partial(freeze_slice,
