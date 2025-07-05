@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
-# PROMPT_NAME="test-gpt2"
-PROMPT_NAME="test-gemma"
+PROMPT_NAME="test-gpt2"
+# PROMPT_NAME="test-gemma"
 # PROMPT_NAME="basketball-llama"
 # PROMPT_NAME="basketball-gemma"
 # PROMPT_NAME="basketball-smollm"
@@ -46,38 +46,3 @@ $@ \
 
 # --transcoder_path="EleutherAI/skip-transcoder-Llama-3.2-1B-131k" \
 exit
-
-
-PROMPT_NAME="basketball-gpt2"
-PROMPT_TEXT="<|endoftext|>What sport does Michael Jordan play? Michael Jordan plays the sport of"
-uv run python -m attribute --model_name="gpt2" \
---transcoder_path="/mnt/ssd-1/nev/sparsify/checkpoints/clt-gpt2-finetune/ft-test-0" \
---cache_path=results/transcoder_gpt2_128x_const_k16_ft_v0/latents \
---name $PROMPT_NAME \
---scan "gpt2-128x-const-k16-ft-v0" \
---remove_prefix 1 \
-"$PROMPT_TEXT"
-exit
-
-uv run python -m attribute --model_name="nev/GELU_4L512W_C4_Code" \
---transcoder_path="../e2e/checkpoints/gelu-4l-clt/ef128k64" \
---cache_path=results/transcoder_gelu4l_x128k64-0/latents \
---name "test-1-gelu4l" \
---scan "gelu-4l-x128k64-v0" \
---remove_bos True \
-"<|BOS|>The National Digital Analytics Group ("
-exit
-
-CUDA_VISIBLE_DEVICES=1 uv run python -m attribute --model_name="nev/acronym-toy-3M" \
---transcoder_path="../e2e/checkpoints/acr-clt/test" \
---cache_path=results/transcoder_acr/latents \
---name "test-1-acr" \
---scan "acr-new-test" \
-"National Dome Automatic Graph ("
-exit
-
-ATT='uv run python -m attribute --model_name="roneneldan/TinyStories-33M" --transcoder_path="../e2e/checkpoints/clt-ts/ts" --cache_path=results/transcoder_128x/latents'
-# $ATT --name="test-1-ts" "<|endoftext|>After falling in mud, she had a"
-# $ATT --name="test-2-ts" "<|endoftext|>There was a girl called Lucy."
-$ATT --name="test-3-ts" "<|endoftext|>The girl's dog had a red ball. She said \"It's color is"
-$ATT --name="test-4-ts" "<|endoftext|>Once upon a time, Ada was happily walking through a magical forest with"
