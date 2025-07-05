@@ -380,7 +380,7 @@ class TranscodedModel(object):
             error.detach_()
             error.requires_grad_(True)
             fvu_approx = diff[:, 1:].pow(2).sum() / output[:, 1:].pow(2).sum()
-            logger.info(f"Layer {module_name} error: {fvu_approx.item()} L0: {l0}")
+            logger.info(f"Layer {module_name} error: {fvu_approx.item():.3f} L0: {l0:.2f}")
             error_magnitudes.append(fvu_approx.item())
             l0s_per_layer.append(l0)
 
