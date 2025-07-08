@@ -54,7 +54,7 @@ class AttributionConfig:
     # keep nodes that make up this fraction of the total influence
     node_cum_threshold: float = 0.8
     # target node count for pruning
-    pruning_target_counts: list[int] = field(default_factory=lambda: [5, 10, 25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
+    pruning_target_counts: list[int] = field(default_factory=lambda: [1, 2, 5, 10, 25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
     pruning_target_meaning: Literal["l0", "nodes"] = "l0"
     # keep per_layer_position nodes above this threshold for each layer/position pair
     secondary_threshold = 1e-5
@@ -131,7 +131,7 @@ class AttributionGraph:
     def logits(self):
         return self.cache.logits[0]
 
-    def adjacency_matrix(self, normalize: bool = True, absolute: bool = True):
+    def adjacency_matrix(self):
         logger.info("Deduplicating nodes")
         dedup_node_names = set()
         for edge in self.edges.values():
@@ -155,12 +155,7 @@ class AttributionGraph:
             target_index = dedup_node_indices[edge.target.id]
             source_index = dedup_node_indices[edge.source.id]
             weight = edge.weight
-            if absolute:
-                weight = abs(weight)
             adj_matrix[target_index, source_index] = weight * activation_sources[source_index]
-
-        if normalize:
-            adj_matrix /= np.maximum(1e-10, np.nan_to_num(adj_matrix.sum(axis=1, keepdims=True)))
 
         return adj_matrix, dedup_node_names
 
@@ -178,12 +173,13 @@ class AttributionGraph:
     @torch.inference_mode()
     def find_influence(self, adj_matrix: np.ndarray):
         n_initial = adj_matrix.shape[0]
+        adj_matrix = np.abs(adj_matrix)
+        adj_matrix /= np.maximum(1e-10, np.nan_to_num(adj_matrix.sum(axis=1, keepdims=True)))
         if self.config.influence_method == "gpu":
             adj_gpu = torch.from_numpy(adj_matrix).to(self.model.device)
             identity = torch.eye(n_initial, device=self.model.device)
             influence = torch.inverse(identity - adj_gpu) - identity
             influence = influence.cpu().numpy()
-            adj_matrix = adj_gpu.cpu().numpy()
         elif self.config.influence_method == "iterative":
             influence = LinearOperator(
                 shape=(n_initial, n_initial),
@@ -193,7 +189,7 @@ class AttributionGraph:
             )
         else:
             influence = np.linalg.inv(np.eye(n_initial) - adj_matrix) - np.eye(n_initial)
-        return influence
+        return influence, adj_matrix
 
     def save_graph(self, save_dir: os.PathLike | None) -> SaveResults | None:
         adj_matrix, dedup_node_names = self.adjacency_matrix()
@@ -217,7 +213,8 @@ class AttributionGraph:
                 influence_sources[index] = node.probability
 
         logger.info("Finding influences")
-        influence = self.find_influence(adj_matrix)
+        original_adj_matrix = adj_matrix.copy()
+        influence, adj_matrix = self.find_influence(adj_matrix)
         usage = influence_sources @ influence
         logger.info(f"Top influences: {usage[np.argsort(usage)[-10:][::-1]].tolist()}")
 
@@ -271,15 +268,32 @@ class AttributionGraph:
                 filtered_mask[dedup_node_indices[node]] = 1
 
             # pruned nodes can receive influence but don't contribute to the completeness score
-            filtered_adj_matrix = adj_matrix * filtered_mask[:, None]
-            filtered_influence = self.find_influence(filtered_adj_matrix)
-            # includes pruned nodes as sources; they become error nodes and may receive some influence
+
+            filtered_adj_matrix = original_adj_matrix.copy()
+            # filtered_adj_matrix = np.abs(filtered_adj_matrix)
+            # filtered_adj_matrix /= np.maximum(1e-10, np.nan_to_num(filtered_adj_matrix.sum(axis=1, keepdims=True)))
+            for node_name in dedup_node_names:
+                node = self.nodes[node_name]
+                node_index = dedup_node_indices[node_name]
+                contribution = original_adj_matrix[:, node_index]
+                kept = filtered_mask[node_index]
+                if not kept:
+                    if not isinstance(node, ErrorNode):
+                        filtered_adj_matrix[:, node_index] = 0
+                        filtered_adj_matrix[node_index, :] = 0
+                    error_node = self.nodes[f"error_{node.token_position}_{node.layer_index}"]
+                    err_index = dedup_node_indices[error_node.id]
+                    if filtered_mask[err_index] and not isinstance(node, ErrorNode):
+                        filtered_adj_matrix[:, err_index] += contribution
+            filtered_adj_matrix = filtered_adj_matrix * filtered_mask[:, None]
+
+            filtered_influence, filtered_adj_matrix = self.find_influence(filtered_adj_matrix)
             filtered_influence = influence_sources + influence_sources @ filtered_influence
 
-            err_or_pruned = (error_mask & filtered_mask) | (~error_mask & ~emb_mask & ~filtered_mask)
-            completeness_score = ((filtered_influence * filtered_mask) * (1 - (filtered_adj_matrix * err_or_pruned[None, :]).sum(axis=1))).sum() / (filtered_influence * filtered_mask).sum()
+            err_mask = error_mask
+            completeness_score = ((filtered_influence * filtered_mask) * (1 - (filtered_adj_matrix * err_mask[None, :]).sum(axis=1))).sum() / (filtered_influence * filtered_mask).sum()
             influence_emb = filtered_influence[emb_mask].sum()
-            influence_err = filtered_influence[err_or_pruned].sum()
+            influence_err = filtered_influence[err_mask].sum()
             replacement_score = float(influence_emb / (influence_emb + influence_err))
 
             # prune back for later metrics with filtered indices
@@ -302,9 +316,7 @@ class AttributionGraph:
             if self.config.pruning_target_meaning == "l0":
                 n_nodes_select = n_nodes_select * self.seq_len
             n_nodes_select = n_nodes_select + self.seq_len + len(self.output_nodes)
-            if n_nodes_select >= len(dedup_node_names):
-                continue
-            threshold = sorted_usage[n_nodes_select]
+            threshold = sorted_usage[min(n_nodes_select, len(sorted_usage) - 1)]
             selected_nodes_, _filtered_mask, _filtered_influence, _filtered_adj_matrix, completeness_score, replacement_score = filter_nodes(threshold)
             logger.info(f"Pruned to {n_nodes_select} nodes, completeness={completeness_score:.3f}, replacement={replacement_score:.3f}")
             # logger.info(f"Fraction of error nodes: {np.sum(error_mask[filtered_mask]) / len(selected_nodes):.3f}")

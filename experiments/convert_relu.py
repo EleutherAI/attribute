@@ -1,5 +1,11 @@
 #%%
 from IPython import get_ipython
+if (ip := get_ipython()) is not None:
+    ip.run_line_magic("load_ext", "autoreload")
+    ip.run_line_magic("autoreload", "2")
+    ip.run_line_magic("env", "CUDA_VISIBLE_DEVICES=7")
+import os
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import re
 import json
 import torch
@@ -10,17 +16,14 @@ from transformers import AutoModelForCausalLM
 from sparsify import SparseCoderConfig
 from attribute.caching import TranscodedModel
 from safetensors.torch import load_file, save_file
-if (ip := get_ipython()) is not None:
-    ip.run_line_magic("load_ext", "autoreload")
-    ip.run_line_magic("autoreload", "2")
 torch.set_grad_enabled(False)
 # %%
 model_name = "meta-llama/Llama-3.2-1B"
-repo_id = "mntss/skip-transcoder-Llama-3.2-1B-131k-nobos"
-branch = "new-training"
+repo_id = "mntss/transcoder-Llama-3.2-1B"
+branch = "no-skip-sp20"
 model_hf = AutoModelForCausalLM.from_pretrained(model_name, device_map={"": "cpu"})
 transcoder_path = Path(snapshot_download(repo_id, revision=branch))
-output_path = Path("results/llama-mntss-relu")
+output_path = Path(f"results/Llama-3.2-1B-mntss-transcoder-{branch}")
 # %%
 for st_file in tqdm(list(transcoder_path.glob("*.safetensors"))):
     layer_idx = int(re.match(r"layer_(\d+)\.safetensors", st_file.name).group(1))
@@ -28,7 +31,6 @@ for st_file in tqdm(list(transcoder_path.glob("*.safetensors"))):
     state_dict["W_dec"] = state_dict["W_dec"].T.contiguous()
     state_dict["encoder.bias"] = state_dict.pop("b_enc")
     state_dict["encoder.weight"] = state_dict.pop("W_enc")
-    state_dict["W_skip"] = state_dict["W_skip"]
     layer_path = output_path / f"layers.{layer_idx}.mlp"
     layer_path.mkdir(parents=True, exist_ok=True)
     cfg_path = layer_path / "cfg.json"
@@ -39,7 +41,7 @@ for st_file in tqdm(list(transcoder_path.glob("*.safetensors"))):
         k=64,
         num_latents=num_latents,
         transcode=True,
-        skip_connection=True,
+        skip_connection="W_skip" in state_dict,
     )
     json.dump(config.to_dict() | dict(d_in=d_in), cfg_path.open("w"))
 # %%
