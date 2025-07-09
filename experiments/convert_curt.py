@@ -76,18 +76,21 @@ for layer_idx in trange(cfg["num_layers"]):
         b_dec = transcoder_weights[f"decoder_module.decoders.{source_key}.bias_param"]
         b_decs.append(b_dec)
 
+    state_dict = {}
+
+    if cfg["skip_connection"]:
+        state_dict["W_skip"] = transcoder_weights[f"decoder_module.skip_weights.{layer_idx}"] / in_std[None, :] * out_std[:, None]
+        out_mean = out_mean - in_mean @ state_dict["W_skip"].T
+
     b_dec = torch.stack(b_decs, dim=0).sum(dim=0)
     b_dec = b_dec * out_std + out_mean
-    state_dict = {
+    state_dict |= {
         "encoder.weight": enc_weight,
         "encoder.bias": enc_bias,
         "W_dec": torch.cat(W_decs, dim=0),
         "b_dec": b_dec,
         **{f"post_encs.{i}": post_enc.clone() for i in range(n_targets)},
     }
-    if cfg["skip_connection"]:
-        state_dict["W_skip"] = transcoder_weights[f"decoder_module.skip_weights.{layer_idx}"] / in_std[None, :] * out_std[:, None]
-
     layer_path = output_path / f"h.{layer_idx}.mlp"
     layer_path.mkdir(parents=True, exist_ok=True)
     cfg_path = layer_path / "cfg.json"
@@ -123,4 +126,3 @@ result = model_hooked("In another moment, down went Alice after it, never once c
 avg_fvu = np.mean([fvu for fvu in result.error_magnitudes])
 total_l0 = np.sum([l0 for l0 in result.l0_per_layer])
 avg_fvu, total_l0
-#%%
