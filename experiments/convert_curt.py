@@ -26,9 +26,13 @@ from attribute.caching import TranscodedModel
 import json
 
 # clt_name = "untied_global_batchtopk_jumprelu"
-clt_name = "tied_per_target_skip_global_batchtopk_jumprelu"
+# clt_name = "tied_per_target_skip_global_batchtopk_jumprelu"
+clt_name = "untied-layerwise-tokentopk"
+clt_file_name = clt_name
+if clt_name == "untied-layerwise-tokentopk":
+    clt_file_name = "clt_checkpoint_97689"
 st_file = hf_hub_download(repo_id="ctigges/gpt2-clts",
-                          filename=f"{clt_name}/{clt_name}.safetensors")
+                          filename=f"{clt_name}/{clt_file_name}.safetensors")
 cfg_file = hf_hub_download(repo_id="ctigges/gpt2-clts",
                           filename=f"{clt_name}/cfg.json")
 cfg = json.load(open(cfg_file))
@@ -40,8 +44,6 @@ norm_stats = hf_hub_download(repo_id="ctigges/gpt2-clts",
                              filename=f"norm_stats.json")
 norm_stats = json.load(open(norm_stats))
 #%%
-cfg
-#%%
 from tqdm import trange
 import json
 
@@ -52,9 +54,12 @@ for layer_idx in trange(cfg["num_layers"]):
     stat_out = norm_stat["targets"]
     out_mean, out_std = torch.tensor(stat_out["mean"]), torch.tensor(stat_out["std"])
 
-    threshold = transcoder_weights["theta_manager.log_threshold"][layer_idx]
-    threshold = threshold.exp()
     enc_bias = transcoder_weights[f"encoder_module.encoders.{layer_idx}.bias_param"]
+    if cfg["activation_fn"] == "topk":
+        threshold = torch.zeros_like(enc_bias)
+    else:
+        threshold = transcoder_weights["theta_manager.log_threshold"][layer_idx]
+        threshold = threshold.exp()
     enc_bias = enc_bias - threshold
     post_enc = threshold
 
@@ -99,7 +104,7 @@ for layer_idx in trange(cfg["num_layers"]):
     num_latents, d_in = cfg["num_features"], cfg["d_model"]
     config = SparseCoderConfig(
         activation="topk",
-        k=128,
+        k=128 if cfg["activation_fn"] != "topk" else cfg["topk_k"],
         n_targets=n_targets,
         n_sources=layer_idx + 1 if not per_target else 0,
         num_latents=num_latents,
