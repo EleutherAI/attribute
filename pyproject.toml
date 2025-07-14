@@ -48,11 +48,11 @@ pytorch-triton = [
 ]
 
 eai-delphi = { git = "https://github.com/EleutherAI/delphi" }
-eai-sparsify = { path = "../e2e", editable = true }
-# eai-sparsify = { git = "https://github.com/EleutherAI/clt-training", branch="clt" }
+# eai-sparsify = { path = "../e2e", editable = true }
+eai-sparsify = { git = "https://github.com/EleutherAI/clt-training", branch="clt" }
 
 
 [tool.ruff]
-exclude = ["experiments/*.py"]
+exclude = ["experiments/*.py", "scripts/visualize_acts.py"]
 # Ignore F722 for jaxtyping
 ignore = ["F722"]
