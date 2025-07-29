@@ -60,8 +60,8 @@ async def main(
         save_dir.mkdir(parents=True, exist_ok=True)
         (save_dir / "results.json").write_text(json.dumps(save_results.to_dict()))
     if cache_features:
-        attribution_graph.cache_features(cache_path, save_dir)
-        attribution_graph.cache_self_explanations(cache_path, save_dir)
+        attribution_graph.cache_features(save_dir)
+        attribution_graph.cache_self_explanations(save_dir)
         await attribution_graph.cache_contexts(cache_path, save_dir)
 
 

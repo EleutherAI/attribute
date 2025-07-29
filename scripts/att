@@ -30,8 +30,10 @@ uv run python -m attribute \
 --scan "$SCAN" \
 "$PROMPT_TEXT" \
 $@ \
---transcoder_path="/mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/$SCAN" --model_name="openai-community/gpt2" --remove_prefix 1 \
---cache_features=False # --save_graph=False --save_dir=results/test-$SCAN \
+--cache_features=False \
+--transcoder_path="EleutherAI/gpt2-clt-noskip-ef128-k16" --model_name="openai-community/gpt2" --remove_prefix 1 \
+# --transcoder_path="/mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/$SCAN" --model_name="openai-community/gpt2" --remove_prefix 1 \
+# --save_graph=False --save_dir=results/test-$SCAN \
 # --transcoder_path="./experiments/results/$SCAN" --model_name="google/gemma-2-2b" --remove_prefix 1 --offload --pre_ln_hook=True --post_ln_hook=True \
 # --transcoder_path="results/gemma-scope-2b-pt-transcoders" --model_name="google/gemma-2-2b" --remove_prefix 1 --post_ln_hook=True \
 # --transcoder_path="results/llama-mntss-relu" --model_name="meta-llama/Llama-3.2-1B" --remove_prefix 1 --pre_ln_hook=True --force_k=512 --filter_high_freq_early=0.0

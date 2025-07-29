@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal
+from typing import Literal, Optional
 
 import torch
 from jaxtyping import Array, Float, Int
@@ -31,6 +31,7 @@ class MLPOutputs:
     error: Float[Array, "batch seq_len hidden_size"]
     source_error: Float[Array, "batch seq_len hidden_size"]
     l0: float
+    original: Optional[Float[Array, "batch seq_len hidden_size"]] = None
 
 
 @dataclass
@@ -250,6 +251,7 @@ class TranscodedModel(object):
         l0s = {}
         transcoder_locations = {}
         errors = {}
+        original_outputs = {}
         error_magnitudes = []
         l0s_per_layer = []
 
@@ -264,6 +266,7 @@ class TranscodedModel(object):
             if self.pre_ln_hook or self.post_ln_hook:
                 input = resid_mid[layer_idx]
             output = output.detach()
+            original_outputs[layer_idx] = output
 
             if self.offload:
                 if module_name in self.transcoders:
@@ -428,6 +431,7 @@ class TranscodedModel(object):
                 error=errors[self.hookpoints_mlp[i]],
                 source_error=errors[self.hookpoints_mlp[i]],
                 l0=l0s[self.hookpoints_mlp[i]],
+                original=original_outputs.get(i)
             )
 
         transcoded_outputs = TranscodedOutputs(

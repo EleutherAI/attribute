@@ -27,7 +27,8 @@ import json
 
 # clt_name = "untied_global_batchtopk_jumprelu"
 # clt_name = "tied_per_target_skip_global_batchtopk_jumprelu"
-clt_name = "untied-layerwise-tokentopk"
+# clt_name = "untied-layerwise-tokentopk"
+clt_name = "untied_layerwise_batchtopk_jumprelu"
 clt_file_name = clt_name
 if clt_name == "untied-layerwise-tokentopk":
     clt_file_name = "clt_checkpoint_97689"
@@ -127,7 +128,9 @@ model_hooked = TranscodedModel(
 )
 #%%
 import numpy as np
-result = model_hooked("In another moment, down went Alice after it, never once considering how in the world she was to get out again.");
+result = model_hooked("<|endoftext|>In another moment, down went Alice after it, never once considering how in the world she was to get out again.");
 avg_fvu = np.mean([fvu for fvu in result.error_magnitudes])
 total_l0 = np.sum([l0 for l0 in result.l0_per_layer])
 avg_fvu, total_l0
+
+# %%

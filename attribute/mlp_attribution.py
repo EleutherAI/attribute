@@ -3,15 +3,13 @@ import os
 import random
 import numpy as np
 import torch
-from collections import defaultdict, OrderedDict
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Literal
 
 from functools import partial
 from scipy.sparse.linalg import LinearOperator
-from delphi.config import ConstructorConfig, SamplerConfig
-from delphi.latents import LatentDataset
 from loguru import logger
 from tqdm.auto import tqdm, trange
 from jaxtyping import Float, Int, Bool, Array
@@ -21,6 +19,7 @@ from .caching import TranscodedModel, TranscodedOutputs
 from .nodes import (Contribution, Edge, ErrorNode, InputNode, IntermediateNode,
                     Node, OutputNode)
 from .utils import cantor, measure_time
+from .saving import cache_features, make_latent_dataset, cache_contexts
 
 
 @dataclass
@@ -44,11 +43,11 @@ class AttributionConfig:
     filter_high_freq_early: float = 0.01
 
     # remove MLP edges below this threshold
-    pre_filter_threshold: float = 1e-5
+    pre_filter_threshold: float = 0.0
     # keep edges that make up this fraction of the total influence
     edge_cum_threshold: float = 0.98
     # keep top k edges for each node
-    top_k_edges: int = 32
+    top_k_edges: int = 1024
     # method for computing influence
     influence_method: Literal["gpu", "cpu", "iterative"] = "iterative"
     # keep nodes that make up this fraction of the total influence
@@ -158,17 +157,6 @@ class AttributionGraph:
             adj_matrix[target_index, source_index] = weight * activation_sources[source_index]
 
         return adj_matrix, dedup_node_names
-
-    def make_latent_dataset(self, cache_path: os.PathLike, module_latents: dict[str, torch.Tensor]):
-        if self.model.pre_ln_hook and module_latents:
-            module_latents = {k.replace(".mlp", f".{self.model.mlp_layernorm_name}"): v for k, v in module_latents.items()}
-        return LatentDataset(
-            cache_path,
-            SamplerConfig(n_examples_train=10, train_type="top", n_examples_test=0),
-            ConstructorConfig(center_examples=False, example_ctx_len=16, n_non_activating=0),
-            modules=list(module_latents.keys()) if module_latents else None,
-            latents=module_latents,
-        )
 
     @torch.inference_mode()
     def find_influence(self, adj_matrix: np.ndarray):
@@ -480,7 +468,7 @@ class AttributionGraph:
             dense = json.loads(dense_cache_path.read_text())
         else:
             dense = []
-            ds = self.make_latent_dataset(cache_path, None)
+            ds = make_latent_dataset(self.model, cache_path, None)
             for buf in tqdm(ds.buffers, desc="Finding dense features"):
                 module = buf.module_path
                 all_features, _, all_tokens = buf.load()
@@ -505,50 +493,16 @@ class AttributionGraph:
 
         self.dense_features = set((pos, *feature) for pos in range(self.seq_len) for feature in dense)
 
-    def cache_features(self, cache_path: os.PathLike, save_dir: os.PathLike):
-        cache_path = Path(cache_path)
-        save_dir = Path(save_dir)
-        logit_weight = self.model.logit_weight
-        logit_bias = self.model.logit_bias
-        for node in tqdm(self.exported_nodes, desc="Caching features"):
+    def cache_features(self, save_dir: os.PathLike):
+        nodes = []
+        for node in self.exported_nodes:
             if node.node_type == "IntermediateNode":
-                feature_dir = save_dir / "features" / self.config.scan
+                nodes.append((int(node.layer_index), int(node.feature_index)))
+        cache_features(self.model, save_dir, nodes, scan=self.config.scan, use_logit_bias=self.config.use_logit_bias)
 
-                layer, feature = int(node.layer_index), int(node.feature_index)
-
-                with torch.no_grad(), torch.autocast("cuda"):
-                    try:
-                        logger.disable("attribute.caching")
-                        dec_weight = self.model.w_dec_i(layer, feature)
-                    finally:
-                        logger.enable("attribute.caching")
-                    logits = logit_weight @ dec_weight
-                    del dec_weight
-                    if self.config.use_logit_bias:
-                        logits += logit_bias
-                    top_logits = logits.topk(10).indices.tolist()
-                    bottom_logits = logits.topk(10, largest=False).indices.tolist()
-                top_logits = [self.model.decode_token(i) for i in top_logits]
-                bottom_logits = [self.model.decode_token(i) for i in bottom_logits]
-
-                feature_vis = dict(
-                    index=cantor(layer, feature),
-                    bottom_logits=bottom_logits,
-                    top_logits=top_logits,
-                )
-                feature_dir.mkdir(parents=True, exist_ok=True)
-                feature_path = feature_dir / f"{cantor(layer, feature)}.json"
-                if feature_path.exists():
-                    try:
-                        feature_vis = json.loads(feature_path.read_text()) | feature_vis
-                    except json.JSONDecodeError:
-                        pass
-                feature_path.write_text(json.dumps(feature_vis))
-
-    def cache_self_explanations(self, cache_path: os.PathLike, save_dir: os.PathLike):
+    def cache_self_explanations(self, save_dir: os.PathLike):
         if not self.config.use_self_explanation:
             return
-        cache_path = Path(cache_path)
         save_dir = Path(save_dir)
         for node in tqdm(self.exported_nodes, desc="Caching self-explanations"):
             if node.node_type == "IntermediateNode":
@@ -645,70 +599,12 @@ class AttributionGraph:
         decoded = [decoded.partition('"')[0].partition("\n")[0] for decoded in decoded]
         return decoded
 
-    async def cache_contexts(self, cache_path: os.PathLike, save_dir: os.PathLike):
-        cache_path = Path(cache_path)
-        save_dir = Path(save_dir)
-        feature_paths = {}
-        module_latents = defaultdict(list)
-        dead_features = set()
+    def cache_contexts(self, cache_path: os.PathLike, save_dir: os.PathLike):
+        nodes = []
         for node in self.exported_nodes:
             if node.node_type == "IntermediateNode":
-                layer_idx = node.layer_index
-                feature_idx = node.feature_index
-                feature_dir = save_dir / "features" / self.config.scan
-                feature_dir.mkdir(parents=True, exist_ok=True)
-                feature_path = feature_dir / f"{cantor(layer_idx, feature_idx)}.json"
-                if feature_path.exists():
-                    if "examples_quantiles" in json.loads(feature_path.read_text()):
-                        continue
-                feature_paths[(layer_idx, feature_idx)] = feature_path
-                module_latents[self.model.temp_hookpoints_mlp[layer_idx]].append(feature_idx)
-                dead_features.add((layer_idx, feature_idx))
-
-        module_latents = {k: torch.tensor(v) for k, v in module_latents.items()}
-        module_latents = {k: v[torch.argsort(v)] for k, v in module_latents.items()}
-
-        ds = self.make_latent_dataset(cache_path, module_latents)
-
-        bar = tqdm(total=sum(map(len, module_latents.values())))
-        def process_feature(feature):
-            layer_idx = int(feature.latent.module_name.split(".")[-2])
-            feature_idx = feature.latent.latent_index
-            dead_features.discard((layer_idx, feature_idx))
-
-            feature_path = feature_paths[(layer_idx, feature_idx)]
-
-            feature_vis = json.loads(feature_path.read_text())
-            examples_quantiles = feature_vis.get("examples_quantiles", None)
-
-            if examples_quantiles is None:
-                examples_quantiles = defaultdict(list)
-                for example in feature.train:
-                    examples_quantiles[example.quantile].append(dict(
-                        is_repeated_datapoint=False,
-                        train_token_index=len(example.tokens) - 1,
-                        tokens=[self.model.decode_token(i) for i in example.tokens.tolist()],
-                        tokens_acts_list=example.activations.tolist(),
-                    ))
-                examples_quantiles = [
-                    dict(
-                        quantile_name=f"Quantile {i}",
-                        examples=examples_quantiles[i],
-                    ) for i in sorted(examples_quantiles.keys())
-                ]
-            feature_vis["examples_quantiles"] = examples_quantiles
-
-            feature_path.write_text(json.dumps(feature_vis))
-            bar.update(1)
-            bar.refresh()
-
-        async for feature in ds:
-            process_feature(feature)
-        bar.close()
-
-        if len(dead_features) > 0:
-            dead_features = list(dead_features)
-            logger.info(f"Dead features: {dead_features[:10]}{'...' if len(dead_features) > 10 else ''}")
+                nodes.append((int(node.layer_index), int(node.feature_index)))
+        cache_contexts(self.model, cache_path, save_dir, nodes, scan=self.config.scan)
 
     def initialize_graph(self):
         num_layers = self.num_layers

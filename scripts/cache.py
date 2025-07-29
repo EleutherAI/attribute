@@ -49,8 +49,11 @@ def load_artifacts(run_cfg: RunConfig):
         compile=True,
     )
     if run_cfg.hook_resid_mid:
-        hookpoint_to_sparse_encode = {h.replace(".mlp", ".post_attention_layernorm"): hookpoint_to_sparse_encode[h] for h in run_cfg.hookpoints}
-        run_cfg.hookpoints = [h.replace(".mlp", ".post_attention_layernorm") for h in run_cfg.hookpoints]
+        post_attn_ln = ".post_attention_layernorm"
+        if model.config.model_type == "gpt2":
+            post_attn_ln = ".ln_2"
+        hookpoint_to_sparse_encode = {h.replace(".mlp", post_attn_ln): hookpoint_to_sparse_encode[h] for h in run_cfg.hookpoints}
+        run_cfg.hookpoints = [h.replace(".mlp", post_attn_ln) for h in run_cfg.hookpoints]
 
     return run_cfg.hookpoints, hookpoint_to_sparse_encode, model, transcode
 

@@ -113,7 +113,7 @@ def generate(session, run_name, model_name, prompt):
         attribution_graph.flow()
         circuit_path = attribution_graph.save_graph(SAVE_DIR)
         html = f'<iframe width="100%" style="height: 100vh" src="./gradio_api/file=attribution-graphs-frontend/index.html?noise={random.random()}"></iframe>'
-        attribution_graph.cache_features(model_cfg["cache_path"], SAVE_DIR)
+        attribution_graph.cache_features(SAVE_DIR)
         if model_name not in running_contexts:
             running_contexts.add(model_name)
             async def task():

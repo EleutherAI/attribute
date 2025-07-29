@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 MODEL=gpt2
 HOOKPOINTS="h.0.mlp h.1.mlp h.2.mlp h.3.mlp h.4.mlp h.5.mlp h.6.mlp h.7.mlp h.8.mlp h.9.mlp h.10.mlp h.11.mlp"
-TRANSCODER=../e2e/checkpoints/gpt2-sweep/$1
-DATASET="--dataset_repo EleutherAI/fineweb-edu-dedup-10b --dataset_split train --n_tokens 1_000_000"
+# TRANSCODER=../e2e/checkpoints/gpt2-sweep/$1
+TRANSCODER=EleutherAI/$1
+# TRANSCODER=/home/nev/.cache/huggingface/hub/models--EleutherAI--gpt2-plt-ef128-ksweep/snapshots/9bcbf9c9c8f414a542beb46c4cc7aea820b9bbde/
+# TRANSCODER=/home/nev/.cache/huggingface/hub/models--EleutherAI--gpt2-clt-source-tied-ef128-k16/snapshots/5b81b1c7cd0daba1a6b51eeb782806961608ea11
+# DATASET="--dataset_repo EleutherAI/fineweb-edu-dedup-10b --dataset_split train --n_tokens 1_000_000"
+DATASET="--dataset_repo EleutherAI/fineweb-edu-dedup-10b --dataset_split train --n_tokens 10_000_000"
 NAME="gpt2-sweep-cache/$1"
-uv run python scripts/cache.py $MODEL $TRANSCODER --num_gpus 1 $DATASET --hookpoints $HOOKPOINTS --name $NAME --batch_size 16 --cache_ctx_len 128
+uv run python scripts/cache.py $MODEL $TRANSCODER --num_gpus 1 $DATASET --hookpoints $HOOKPOINTS --name $NAME --batch_size 16 --cache_ctx_len 128 --hook_resid_mid
