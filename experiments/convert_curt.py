@@ -28,9 +28,10 @@ import json
 # clt_name = "untied_global_batchtopk_jumprelu"
 # clt_name = "tied_per_target_skip_global_batchtopk_jumprelu"
 # clt_name = "untied-layerwise-tokentopk"
-clt_name = "untied_layerwise_batchtopk_jumprelu"
+# clt_name = "untied_layerwise_batchtopk_jumprelu"
+clt_name = "tied-per-target-layerwise-token-topk"
 clt_file_name = clt_name
-if clt_name == "untied-layerwise-tokentopk":
+if clt_name in ("untied-layerwise-tokentopk", "tied-per-target-layerwise-token-topk"):
     clt_file_name = "clt_checkpoint_97689"
 st_file = hf_hub_download(repo_id="ctigges/gpt2-clts",
                           filename=f"{clt_name}/{clt_file_name}.safetensors")

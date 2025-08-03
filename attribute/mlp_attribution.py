@@ -43,17 +43,18 @@ class AttributionConfig:
     filter_high_freq_early: float = 0.01
 
     # remove MLP edges below this threshold
-    pre_filter_threshold: float = 0.0
+    pre_filter_threshold: float = 1e-6
     # keep edges that make up this fraction of the total influence
     edge_cum_threshold: float = 0.98
     # keep top k edges for each node
-    top_k_edges: int = 1024
+    top_k_edges: int = 32
     # method for computing influence
-    influence_method: Literal["gpu", "cpu", "iterative"] = "iterative"
+    influence_method: Literal["gpu", "cpu", "iterative"] = "gpu"
     # keep nodes that make up this fraction of the total influence
     node_cum_threshold: float = 0.8
     # target node count for pruning
     pruning_target_counts: list[int] = field(default_factory=lambda: [1, 2, 5, 10, 25, 50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000])
+    disable_prune_sweep: bool = True
     pruning_target_meaning: Literal["l0", "nodes"] = "l0"
     # keep per_layer_position nodes above this threshold for each layer/position pair
     secondary_threshold = 1e-5
@@ -299,7 +300,10 @@ class AttributionGraph:
         logger.info(f"Replacement score: {replacement_score:.3f}")
 
         sweep_pruning_results = {}
-        for n_nodes in self.config.pruning_target_counts:
+        if save_dir is None and self.config.disable_prune_sweep:
+            logger.info("Not saving circuit, enabling prune sweep")
+            self.config.disable_prune_sweep = True
+        for n_nodes in (self.config.pruning_target_counts if not self.config.disable_prune_sweep else []):
             n_nodes_select = n_nodes
             if self.config.pruning_target_meaning == "l0":
                 n_nodes_select = n_nodes_select * self.seq_len

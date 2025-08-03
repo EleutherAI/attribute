@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 
-PROMPT_NAME="test-gpt2"
+# PROMPT_NAME="test-gpt2"
 # PROMPT_NAME="test-gemma"
 # PROMPT_NAME="basketball-llama"
-# PROMPT_NAME="basketball-gemma"
+#ROMPT_NAME="basketball-gemma"
 # PROMPT_NAME="basketball-smollm"
 # PROMPT_NAME="basketball-llama-base"
 # SCAN=transcoder_llama_131k_highbs_v0
 # SCAN=transcoder-llama-131k-mntss
 # SCAN=bs8-lr2e-4-none-ef128-k16
-SCAN=bs32-lr2e-4-source-tied-ef128-k16-adam8
+#SCAN=bs32-lr2e-4-source-tied-ef128-k16-adam8
 # SCAN=bs16-lr2e-4-btopk-noskip-ef128-k16-adam8-bf16
 # SCAN=bs8-lr3e-4-tied-ef128-k16
 # SCAN=gemma-mntss-no-skip
-# SCAN=gemmascope
+SCAN=gemmascope
 # SCAN=gemmascope
 # SCAN=transcoder_llama_131k_mntss_kl
 # SCAN=transcoder-llama-131k-adam-kl
@@ -23,7 +23,8 @@ SCAN=bs32-lr2e-4-source-tied-ef128-k16-adam8
 set -e
 # PROMPT_TEXT="Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum."
 # PROMPT_TEXT="<|endoftext|>What is Michael Jordan's name? Michael Jordan's name is"
-PROMPT_TEXT="<|endoftext|>Michael Jordan plays the sport of"
+#PROMPT_TEXT="<|endoftext|>Michael Jordan plays the sport of"
+PROMPT_TEXT="Michael Jordan plays the sport of"
 uv run python -m attribute \
 --cache_path=results/$SCAN/latents \
 --name $PROMPT_NAME \
@@ -31,7 +32,8 @@ uv run python -m attribute \
 "$PROMPT_TEXT" \
 $@ \
 --cache_features=False \
---transcoder_path="EleutherAI/gpt2-clt-noskip-ef128-k16" --model_name="openai-community/gpt2" --remove_prefix 1 \
+--transcoder_path="EleutherAI/gemmascope-transcoders-sparsify" --model_name="google/gemma-2-2b" --remove_prefix 1 --post_ln_hook=True \
+# --transcoder_path="EleutherAI/gpt2-clt-noskip-ef128-k16" --model_name="openai-community/gpt2" --remove_prefix 1 \
 # --transcoder_path="/mnt/ssd-1/nev/e2e/checkpoints/gpt2-sweep/$SCAN" --model_name="openai-community/gpt2" --remove_prefix 1 \
 # --save_graph=False --save_dir=results/test-$SCAN \
 # --transcoder_path="./experiments/results/$SCAN" --model_name="google/gemma-2-2b" --remove_prefix 1 --offload --pre_ln_hook=True --post_ln_hook=True \
