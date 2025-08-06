@@ -49,7 +49,7 @@ class AttributionConfig:
     # keep top k edges for each node
     top_k_edges: int = 32
     # method for computing influence
-    influence_method: Literal["gpu", "cpu", "iterative"] = "gpu"
+    influence_method: Literal["gpu", "cpu", "iterative"] = "iterative"
     # keep nodes that make up this fraction of the total influence
     node_cum_threshold: float = 0.8
     # target node count for pruning
