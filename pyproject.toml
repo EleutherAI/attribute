@@ -23,7 +23,7 @@ dependencies = [
     "transformers>=4.51.3",
     "gradio>=5.30.0",
     "neuronpedia>=1.0.20",
-    "datasets>=2.14.6",
+    "datasets==3.6.0",
 ]
 
 [tool.setuptools]

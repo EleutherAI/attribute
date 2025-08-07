@@ -3,12 +3,39 @@
 Reproduction of Anthropic's [Attribution Graphs](https://transformer-circuits.pub/2025/attribution-graphs/methods.html).
 
 ## Setup
+
+### Install UV
+
+**Option 1: Use `mise`** 
+Install mise: https://mise.jdx.dev/getting-started.html
+
+Environment setup can be done with:
+```sh
+mise install
 ```
-# install uv if you don't have it
-# curl -LsSf https://astral.sh/uv/install.sh | sh
+This will install `uv`.
+
+**Option 2: Direct install**
+
+```sh
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+### Pull dependencies
+Once you have `uv` installed:
+
+```sh
 uv venv --seed
 uv sync
 ```
+
+### Huggingface Token
+To use some of the read restricted models, you'll need a registerd Huggingface Account and corresponding Read token. Use the following to pick it up:
+
+```sh
+export HF_TOKEN=<YOUR READ TOKEN>
+```
+
 
 ## Cache activations
 This step is not strictly necessary. Given the weights of a transcoder, we need to compute activations on a large dataset to be able to select maximum-activating examples.
@@ -25,7 +52,7 @@ uv run python cache.py $MODEL $TRANSCODER --num_gpus 1 $DATASET --hookpoints lay
 
 Alternatively, you can download the cache from Huggingface:
 
-```
+```sh
 cd results && git clone https://huggingface.co/nev/SmolLM2-CLT-135M-73k-k32-cache --depth=1
 ```
 
@@ -33,7 +60,7 @@ cd results && git clone https://huggingface.co/nev/SmolLM2-CLT-135M-73k-k32-cach
 
 We developed a gradio visualization for running attribution:
 
-```
+```sh
 uv run gradio serve.py
 ```
 
@@ -43,7 +70,7 @@ The web UI can be run from [a Colab notebook](https://colab.research.google.com/
 
 ## Run in CLI
 
-```
+```sh
 SCAN="smollm-v1"
 PROMPT_NAME="smollm-v1"
 PROMPT_TEXT="Michael Jordan plays the sport of"
@@ -55,12 +82,14 @@ uv run python -m attribute \
 --transcoder_path="nev/SmolLM2-CLT-135M-73k-k32" --model_name="HuggingFaceTB/SmolLM2-135M" \
 ```
 
-```
+```sh
 uv run python -m attribute
 cd attribution-graphs-frontend
 uv run python serve.py 9999
 ngrok http 9999
 ```
+
+Note: Ngrok now requires authentication
 
 ## TODOs
 - [ ] Cross-verify with Anthropic implementation
