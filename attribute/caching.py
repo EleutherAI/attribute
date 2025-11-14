@@ -10,7 +10,7 @@ from typing import Literal, Optional
 import torch
 from jaxtyping import Array, Float, Int
 from sparsify import SparseCoder, CrossLayerRunner
-from transformers import AutoModelForCausalLM, PreTrainedModel, AutoTokenizer
+from transformers import AutoModelForCausalLM, PreTrainedModel, AutoTokenizer, AutoModelForMaskedLM
 from transformers.models.llama import LlamaPreTrainedModel
 from transformers.models.gpt_neo import GPTNeoPreTrainedModel
 from transformers.models.gpt2 import GPT2PreTrainedModel
@@ -86,11 +86,19 @@ class TranscodedModel(object):
             model = model_name
             model_name = model.name_or_path
         else:
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                device_map={"": device},
-                torch_dtype=torch.bfloat16,
-            )
+            if "nucleotide" in model_name:
+                model = AutoModelForMaskedLM.from_pretrained(
+                    model_name,
+                    device_map={"": device},
+                    torch_dtype=torch.bfloat16,
+                    trust_remote_code=True,
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    device_map={"": device},
+                    torch_dtype=torch.bfloat16,
+                )
         model.to(device)
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = model
@@ -106,10 +114,18 @@ class TranscodedModel(object):
                     return hookpoint.replace("model.layers.", "layers.")
                 elif isinstance(model, GPT2Like):
                     return hookpoint.replace("transformer.h.", "h.")
+                elif 'InstaDeepAI' in model.name_or_path:
+                    return hookpoint.replace("esm.encoder.layer.", "encoder.layer.")
                 else:
                     logger.warning(f"Unknown model type: {type(model)}. Using default hookpoint.")
                     return hookpoint
-        self.hookpoints_mlp = [f"{self.layer_prefix}.{i}.mlp" for i in range(self.num_layers)]
+        if 'InstaDeepAI' in model.name_or_path:
+            self.hookpoints_mlp = [f"{self.layer_prefix}.{i}.output.dense" for i in range(self.num_layers)]
+                
+            self.hookpoints_intermediate = [f"{self.layer_prefix}.{i}.intermediate" for i in range(self.num_layers)]
+            self.intermediate_hook = True
+        else:
+            self.hookpoints_mlp = [f"{self.layer_prefix}.{i}.mlp" for i in range(self.num_layers)]
         if post_ln_hook and isinstance(model, Gemma2PreTrainedModel):
             self.hookpoints_mlp_post = [
                 f"{self.layer_prefix}.{i}.post_feedforward_layernorm"
@@ -117,9 +133,13 @@ class TranscodedModel(object):
             ]
         else:
             self.hookpoints_mlp_post = self.hookpoints_mlp
-        self.temp_hookpoints_mlp = [
-            hookpoint_fn(hookpoint) for hookpoint in self.hookpoints_mlp
-        ]
+        if 'InstaDeepAI' in model.name_or_path:
+            self.temp_hookpoints_mlp = [hookpoint_fn(f"{self.layer_prefix}.{i}.output.dense") for i in range(self.num_layers)]
+        else:
+            self.temp_hookpoints_mlp = [
+                hookpoint_fn(hookpoint) for hookpoint in self.hookpoints_mlp
+            ]
+       
         logger.info(f"Loading transcoders from {transcoder_path}")
         transcoder_path = Path(transcoder_path)
         self.transcoders = {}
@@ -127,6 +147,7 @@ class TranscodedModel(object):
         self.offloaded_encoder_indices = {}
         self.offloaded_decoder_indices = {}
         def load_transcoder(hookpoint, temp_hookpoint):
+            print(transcoder_path.joinpath(temp_hookpoint))
             if not transcoder_path.joinpath(temp_hookpoint).exists():
                 sae = SparseCoder.load_from_hub(
                     str(transcoder_path),
@@ -157,11 +178,11 @@ class TranscodedModel(object):
                 for suffix in ["post_feedforward_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm"]
             ]
         self.name_to_module = {
-            name: model.get_submodule(name) for name in self.hookpoints_layer + self.hookpoints_mlp + self.hookpoints_ln + self.hookpoints_attn_ln + self.additional_ln
+            name: model.get_submodule(name) for name in self.hookpoints_layer + self.hookpoints_mlp + self.hookpoints_ln + self.hookpoints_attn_ln + self.additional_ln + self.hookpoints_intermediate
         }
         self.name_to_index = {
             k: i
-            for arr in [self.hookpoints_layer, self.hookpoints_mlp, self.hookpoints_ln, self.hookpoints_mlp_post]
+            for arr in [self.hookpoints_layer, self.hookpoints_mlp, self.hookpoints_ln, self.hookpoints_mlp_post, self.hookpoints_intermediate]
             for i, k in enumerate(arr)
         }
         self.module_to_name = {v: k for k, v in self.model.named_modules()}
@@ -193,7 +214,10 @@ class TranscodedModel(object):
             tokenized_prompt = self.tokenizer(prompt, return_tensors="pt").to(self.device)
             logger.info(f"Tokenized prompt: {[self.decode_token(i) for i in tokenized_prompt.input_ids[0]]}")
         elif isinstance(prompt, list):
-            self.tokenizer.pad_token = self.tokenizer.eos_token
+            if 'InstaDeepAI' in self.model.name_or_path:
+                self.tokenizer.add_special_tokens({'pad_token': '<pad>'})
+            else:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
             tokenized_prompt = self.tokenizer(prompt, return_tensors="pt", padding=True).to(self.device)
         elif isinstance(prompt, torch.Tensor):
             tokenized_prompt = SimpleNamespace(input_ids=prompt.to(self.device))
@@ -216,7 +240,7 @@ class TranscodedModel(object):
             return (input[0] - mean) * multiplier + getattr(module, "bias", 0)
 
         for hookpoint in self.hookpoints_layer:
-            ln = getattr(self.name_to_module[hookpoint], self.attn_layernorm_name)
+            ln = getattr(self.name_to_module[hookpoint].attention, self.attn_layernorm_name)
             ln.register_forward_hook(ln_record_hook)
             self.freeze_attention_pattern(hookpoint)
 
@@ -245,6 +269,14 @@ class TranscodedModel(object):
                 resid_mid[self.name_to_index[self.module_to_name[module]]] = input
             for hookpoint in self.hookpoints_mlp:
                 self.name_to_module[hookpoint].register_forward_hook(record_resid_mid)
+        elif self.intermediate_hook:
+            resid_mid = {}
+            def record_resid_mid(module, input, output):
+                if isinstance(input, tuple):
+                    input = input[0]
+                resid_mid[self.name_to_index[self.module_to_name[module]]] = input
+            for hookpoint in self.hookpoints_intermediate:
+                self.name_to_module[hookpoint].register_forward_hook(record_resid_mid)
         runner = CrossLayerRunner()
         target_transcoder_activations = {}
         source_transcoder_activations = {}
@@ -263,8 +295,9 @@ class TranscodedModel(object):
             module_name = self.module_to_name[module]
             layer_idx = self.name_to_index[module_name]
             module_name = self.hookpoints_mlp[layer_idx]
-            if self.pre_ln_hook or self.post_ln_hook:
+            if self.pre_ln_hook or self.post_ln_hook or self.intermediate_hook:
                 input = resid_mid[layer_idx]
+        
             output = output.detach()
             original_outputs[layer_idx] = output
 
@@ -315,7 +348,7 @@ class TranscodedModel(object):
                 # TODO: when patching, we can't use automatic attribution
                 transcoder_acts.latent_acts = acts * (1 - torch.any(torch.stack([indices == i for i in masked_features], dim=0), dim=0).float())
             if steered_features:
-                acts = transcoder_acts.latent_acts
+                acts = transcoder_acts.latent_acts  
                 indices = transcoder_acts.latent_indices
                 acts = acts.view(*batch_dims, -1)
                 indices = indices.view(*batch_dims, -1)
@@ -453,6 +486,8 @@ class TranscodedModel(object):
             return "model.layers"
         elif isinstance(self.model, GPT2Like):
             return "transformer.h"
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return "esm.encoder.layer"  
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -462,6 +497,8 @@ class TranscodedModel(object):
             return "input_layernorm"
         elif isinstance(self.model, GPT2Like):
             return "ln_1"
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return "LayerNorm"
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -473,6 +510,8 @@ class TranscodedModel(object):
             return "post_attention_layernorm"
         elif isinstance(self.model, GPT2Like):
             return "ln_2"
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return "LayerNorm"
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -488,6 +527,8 @@ class TranscodedModel(object):
             return self.model.model.embed_tokens
         elif isinstance(self.model, GPT2Like):
             return self.model.transformer.wte
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return self.model.esm.embeddings.word_embeddings
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -505,6 +546,8 @@ class TranscodedModel(object):
             return self.model.model.norm
         elif isinstance(self.model, GPT2Like):
             return self.model.transformer.ln_f
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return self.model.lm_head.layer_norm
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -640,6 +683,8 @@ class TranscodedModel(object):
             return layer.attn.attention
         elif isinstance(self.model, GPT2PreTrainedModel):
             return layer.attn
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return layer.attention
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -650,6 +695,8 @@ class TranscodedModel(object):
             w_o = self.attn(layer_idx).out_proj.weight
         elif isinstance(self.model, GPT2PreTrainedModel):
             w_o = self.attn(layer_idx).c_proj.weight.T
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            w_o = self.attn(layer_idx).output.dense.weight
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
         return w_o.reshape(self.hidden_size, self.num_attention_heads, self.head_dim)
@@ -676,6 +723,8 @@ class TranscodedModel(object):
             return self.attn(layer_idx).c_attn, 0, self.hidden_size
         elif isinstance(self.model, (GPTNeoPreTrainedModel, LlamaLike)):
             return self.attn(layer_idx).q_proj, 0, self.hidden_size
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return self.attn(layer_idx).self.query, 0, self.hidden_size
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 
@@ -684,6 +733,8 @@ class TranscodedModel(object):
             return self.attn(layer_idx).c_attn, self.hidden_size, self.hidden_size * 2
         elif isinstance(self.model, (GPTNeoPreTrainedModel, LlamaLike)):
             return self.attn(layer_idx).k_proj, 0, self.hidden_size
+        elif 'InstaDeepAI' in self.model.name_or_path:
+            return self.attn(layer_idx).self.key, 0, self.hidden_size
         else:
             raise ValueError(f"Unsupported model type: {type(self.model)}")
 

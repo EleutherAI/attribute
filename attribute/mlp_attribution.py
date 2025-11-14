@@ -32,7 +32,7 @@ class AttributionConfig:
     seed: int = 42
 
     # how many target nodes to compute contributions for
-    flow_steps: int = 15000
+    flow_steps: int = 30000
     # batch size for MLP attribution
     batch_size: int = 32
     # whether to use the softmax gradient for the output node
